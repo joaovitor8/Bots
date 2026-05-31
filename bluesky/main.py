@@ -1,109 +1,156 @@
-from atproto import Client
-import requests
+import logging
 import os
-from deep_translator import GoogleTranslator
+
+import requests
 import schedule
 import time
-
-# Configurações de ambiente
-BLUESKY_USERNAME = os.environ['BLUESKY_USERNAME']
-BLUESKY_PASSWORD = os.environ['BLUESKY_PASSWORD']
-API_NASA_KEY = os.environ['API_NASA_KEY']
+from atproto import Client
+from deep_translator import GoogleTranslator
+from dotenv import load_dotenv
 
 
-def fetch_nasa_media_data(api_key):
-  #"""Obtém os dados da mídia do dia da API da NASA."""
-  response = requests.get(f"https://api.nasa.gov/planetary/apod?api_key={api_key}")
-  if response.status_code == 200:
-    data = response.json()
-    return {
-      'copyright': data['copyright'],
-      'date': data['date'],
-      'url': data['url'],
-      'title': data['title']
-    }
-  else:
-    print("Falha ao obter dados da API da NASA.")
+logging.basicConfig(
+  level=logging.INFO,
+  format="%(asctime)s [%(levelname)s] %(message)s",
+)
+log = logging.getLogger("bluesky-bot")
+
+
+load_dotenv()
+
+
+def _required_env(name: str) -> str:
+  value = os.getenv(name)
+  if not value:
+    raise RuntimeError(f"Variável de ambiente obrigatória ausente: {name}")
+  return value
+
+
+BLUESKY_USERNAME = _required_env("BLUESKY_USERNAME")
+BLUESKY_PASSWORD = _required_env("BLUESKY_PASSWORD")
+API_NASA_KEY = _required_env("API_NASA_KEY")
+
+HTTP_TIMEOUT = 30
+HASHTAGS = "#astronomy  #science  #space  #universe  #cosmology  #astrophotos  #nasa"
+
+
+def fetch_nasa_media_data(api_key: str) -> dict | None:
+  try:
+    response = requests.get(
+      f"https://api.nasa.gov/planetary/apod?api_key={api_key}",
+      timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+  except requests.RequestException as exc:
+    log.error("Falha ao obter dados da API da NASA: %s", exc)
     return None
 
+  data = response.json()
+  return {
+    "copyright": data.get("copyright", ""),
+    "date": data.get("date", ""),
+    "url": data.get("url", ""),
+    "title": data.get("title", "Astronomy Picture"),
+    "media_type": data.get("media_type", "image"),
+  }
 
-def download_media(url):
-  #"""Baixa a mídia (imagem ou vídeo) da URL fornecida e salva localmente."""
-  media_type = 'video' if url.endswith(('.mp4', '.mov')) else 'image'
-  file_extension = '.mp4' if media_type == 'video' else '.jpg'
+
+def download_media(url: str) -> tuple[str | None, str | None]:
+  media_type = "video" if url.endswith((".mp4", ".mov")) else "image"
+  file_extension = ".mp4" if media_type == "video" else ".jpg"
   file_path = f"nasa_media{file_extension}"
 
-  response = requests.get(url)
-  if response.status_code == 200:
-    with open(file_path, "wb") as file:
-      file.write(response.content)
-    print(f"{media_type.capitalize()} baixado(a) com sucesso!")
-    return file_path, media_type
-  else:
-    print(f"Falha ao baixar a mídia. Código de status:", response.status_code)
+  try:
+    with requests.get(url, timeout=HTTP_TIMEOUT, stream=True) as response:
+      response.raise_for_status()
+      with open(file_path, "wb") as file:
+        for chunk in response.iter_content(chunk_size=8192):
+          file.write(chunk)
+  except requests.RequestException as exc:
+    log.error("Falha ao baixar a mídia: %s", exc)
     return None, None
 
+  log.info("%s baixado(a) com sucesso.", media_type.capitalize())
+  return file_path, media_type
 
-def upload_to_bluesky(username, password, title, date, copyright, media_path, media_type):
-  #"""Faz o upload da mídia para o Bluesky com título e data."""
+
+def upload_to_bluesky(
+  username: str,
+  password: str,
+  title: str,
+  date: str,
+  copyright_: str,
+  media_path: str,
+  media_type: str,
+) -> None:
   client = Client()
   client.login(username, password)
 
-  with open(media_path, 'rb') as media_file:
+  with open(media_path, "rb") as media_file:
     media_data = media_file.read()
 
-  hashtag = "#astronomy  #science  #space  #universe  #cosmology  #astrophotos  #nasa"
+  try:
+    translated_title = GoogleTranslator(source="en", target="pt").translate(title)
+  except Exception as exc:
+    log.warning("Falha ao traduzir título, usando original: %s", exc)
+    translated_title = title
 
-  tradutor = GoogleTranslator(source="en", target="pt")
-  traducao = tradutor.translate(title)
+  credit_line = f"\n\nCrédito: {copyright_.replace(chr(10), '')}" if copyright_ else ""
+  text = (
+    f"Midia Astronômica do Dia: {date}\n\n"
+    f"Título: {translated_title}"
+    f"{credit_line}\n\n{HASHTAGS}"
+  )
 
-  if media_type == 'image':
-    client.send_image(text=f'Midia Astronômica do Dia: {date}\n\nTítulo: {traducao}\n\nCrédito: {copyright.replace("\n", "")}\n\n{hashtag}', image=media_data, image_alt=traducao)
-  elif media_type == 'video':
-    client.send_video(text=f'Midia Astronômica do Dia: {date}\n\nTítulo: {traducao}\n\nCrédito: {copyright.replace("\n", "")}\n\n{hashtag}', video=media_data, video_alt=traducao)
+  if media_type == "image":
+    client.send_image(text=text, image=media_data, image_alt=translated_title)
+  elif media_type == "video":
+    client.send_video(text=text, video=media_data, video_alt=translated_title)
+  else:
+    log.warning("Tipo de mídia '%s' não suportado, pulando upload.", media_type)
+    return
 
-  print(f"Mídia({media_type}) enviada com sucesso para o Bluesky.")
+  log.info("Mídia (%s) enviada com sucesso para o Bluesky.", media_type)
 
 
-def delete_local_file(file_path):
-  #"""Remove o arquivo local se ele existir."""
+def delete_local_file(file_path: str) -> None:
   if os.path.exists(file_path):
     os.remove(file_path)
-    print("Mídia deletada com sucesso!")
+    log.info("Mídia local deletada.")
   else:
-    print("Arquivo não encontrado.")
+    log.warning("Arquivo local não encontrado: %s", file_path)
 
 
-def main():
-  # Etapa 1: Obter dados da mídia
+def main() -> None:
   media_data = fetch_nasa_media_data(API_NASA_KEY)
-  if not media_data:
-    return  # Encerra se falhar ao obter dados
-  
-  # Etapa 2: Baixar mídia
-  media_path, media_type = download_media(media_data['url'])
+  if not media_data or not media_data["url"]:
+    return
+
+  media_path, media_type = download_media(media_data["url"])
   if not media_path:
-    return  # Encerra se falhar ao baixar a mídia
+    return
 
-  # Etapa 3: Fazer upload para o Bluesky
-  upload_to_bluesky(BLUESKY_USERNAME, BLUESKY_PASSWORD, media_data['title'], media_data['date'], media_data['copyright'], media_path, media_type)
-
-  # Etapa 4: Deletar arquivo local
-  delete_local_file(media_path)
+  try:
+    upload_to_bluesky(
+      BLUESKY_USERNAME,
+      BLUESKY_PASSWORD,
+      media_data["title"],
+      media_data["date"],
+      media_data["copyright"],
+      media_path,
+      media_type,
+    )
+  finally:
+    delete_local_file(media_path)
 
 
 if __name__ == "__main__":
-  main()
-
-
-
-# # Agendando a execução diária às 15:00
-# schedule.every().day.at("15:30").do(main)
-
-# # Loop para manter o script em execução e verificar o agendamento
-# if __name__ == "__main__":
-#   print("Script agendado para rodar diariamente às 15:30.")
-#   while True:
-#     schedule.run_pending()
-#     time.sleep(60)  # Verifica a cada minuto se é hora de executar a tarefa
-
+  schedule_time = os.getenv("BLUESKY_SCHEDULE_TIME")
+  if schedule_time:
+    log.info("Agendado para rodar diariamente às %s.", schedule_time)
+    schedule.every().day.at(schedule_time).do(main)
+    while True:
+      schedule.run_pending()
+      time.sleep(60)
+  else:
+    main()

@@ -1,0 +1,4 @@
+tweepy>=4.14
+requests>=2.31
+deep-translator>=1.11
+python-dotenv>=1.0

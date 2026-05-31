@@ -1,3 +1,5 @@
 __pycache__/
 .venv
+.env
 keys.py
+nasa_image.jpg

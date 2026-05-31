@@ -1,50 +1,56 @@
+import asyncio
+import logging
+import os
+
 import discord
 from discord.ext import commands
-import asyncio
-import os
 from dotenv import load_dotenv
 
+from services.nasa_api import close_session
 
-load_dotenv() # Isso puxa as informações do arquivo .env para a memória
-TOKEN = os.getenv('DISCORD_TOKEN')
+
+logging.basicConfig(
+  level=logging.INFO,
+  format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+log = logging.getLogger("discord-bot")
+
+
+load_dotenv()
+TOKEN = os.getenv("DISCORD_TOKEN")
+if not TOKEN:
+  raise RuntimeError("DISCORD_TOKEN não definido no .env")
 
 intents = discord.Intents.default()
-intents.message_content = True 
+intents.message_content = True
 
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-@bot.event # EVENTO DE INICIALIZAÇÃO
+@bot.event
 async def on_ready():
-  print(f'Bot {bot.user} online')
-  print('------------------------------------------------------')
+  log.info("Bot %s online.", bot.user)
+  log.info("-" * 54)
 
 
-# CARREGANDO AS ENGRENAGENS (COGS)
 async def carregar_cogs():
-  cogs_iniciais = [
-    'cogs.comandos', # Vai carregar o arquivo cogs/comandos.py
-    'cogs.rotinas'   # Vai carregar o arquivo cogs/rotinas.py
-  ]
-    
+  cogs_iniciais = ["cogs.comandos", "cogs.rotinas"]
   for cog in cogs_iniciais:
     try:
       await bot.load_extension(cog)
-      print(f'✅ Módulo carregado: {cog}')
-    except Exception as e:
-      print(f'❌ Erro ao carregar o módulo {cog}: {e}')
+      log.info("Módulo carregado: %s", cog)
+    except Exception as exc:
+      log.exception("Erro ao carregar o módulo %s: %s", cog, exc)
 
 
-# FUNÇÃO PRINCIPAL QUE RODA TUDO
 async def main():
   async with bot:
-    # Primeiro ele carrega os módulos separados
     await carregar_cogs()
-    # Depois ele liga de fato usando o Token seguro
-    await bot.start(TOKEN)
+    try:
+      await bot.start(TOKEN)
+    finally:
+      await close_session()
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
   asyncio.run(main())
-

@@ -1,0 +1,5 @@
+atproto>=0.0.46
+requests>=2.31
+deep-translator>=1.11
+schedule>=1.2
+python-dotenv>=1.0
